@@ -31,13 +31,11 @@ BluetoothRequestHandler._process_resp_from_queue = _patched_process_resp_from_qu
 
 
 def _patched_process_ack(self):
-    # read_ack può fallire — lo ignoriamo ma NON usciamo
     try:
         self._serial.read_ack()
     except Exception:
-        pass  # continua comunque a processare la queue
+        pass  
 
-    # Questo DEVE sempre eseguire per sbloccare compl_obj.wait()
     try:
         compl_obj, cmd_resp_pair = self._ack_queue.get_nowait()
         if None not in cmd_resp_pair:
@@ -48,12 +46,6 @@ def _patched_process_ack(self):
 
 
 BluetoothRequestHandler._process_ack = _patched_process_ack
-
-# Verifica che le patch siano applicate
-print(
-    f"[PATCH] process_resp: {BluetoothRequestHandler._process_resp_from_queue.__module__}"
-)
-print(f"[PATCH] process_ack: {BluetoothRequestHandler._process_ack.__module__}")
 
 
 def safe_print(messaggio):
@@ -75,11 +67,8 @@ def imu_worker(port, manager):
         try:
             safe_print(f"[IMU] Apertura {port}...")
 
-            # timeout=None: pyshimmer gestisce internamente il timeout del read loop
             ser = serial.Serial(port, DEFAULT_BAUDRATE, timeout=None)
 
-            # Pulizia buffer — senza timeout=None non possiamo usare write prima di aprire
-            # quindi usiamo una pausa e reset
             time.sleep(0.5)
             ser.reset_input_buffer()
             ser.reset_output_buffer()
@@ -125,6 +114,10 @@ def imu_worker(port, manager):
                     with manager.data_lock:
                         manager.activity_level = activity
                         manager.imu_history.append(activity)
+                        
+                        # --- NUOVO: Salvataggio dati IMU ---
+                        if getattr(manager, 'is_recording', False):
+                            manager.dati_da_salvare.append([time.time(), "IMU", activity, mov])
 
             shim_dev.add_stream_callback(imu_handler)
             shim_dev.start_streaming()
@@ -162,16 +155,14 @@ def imu_worker(port, manager):
 # ============================================================
 # WORKER ECG
 # ============================================================
-
-
 def ecg_worker(port, manager):
     time.sleep(4)
 
     HEADER = 0x00
     SIZE_PKT = 16
     OFFSET_STATUS = 6
-    OFFSET_CH1 = 7  # ECG canale principale
-    OFFSET_CH2 = 10  # ECG canale secondario
+    OFFSET_CH1 = 7  
+    OFFSET_CH2 = 10  
 
     while manager.running:
         ser = None
@@ -245,6 +236,10 @@ def ecg_worker(port, manager):
 
                             with manager.data_lock:
                                 manager.ecg_history.append(val_f)
+                                
+                                # --- NUOVO: Salvataggio dati ECG ---
+                                if getattr(manager, 'is_recording', False):
+                                    manager.dati_da_salvare.append([ora, "ECG", val_f, manager.bpm_display])
 
                             val_prec = val_f
 

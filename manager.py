@@ -27,6 +27,11 @@ class HardwareManager:
         self.ultimo_pacchetto_ecg = time.time()
         self.ultimo_pacchetto_imu = time.time()
 
+        # --- DATA LOGGER ASINCRONO ---
+        self.is_recording = False
+        self.dati_da_salvare = [] # Buffer per il salvataggio su file
+
+
 # Il Singleton ufficiale di Streamlit per mantenere i dati vivi tra i refresh
 @st.cache_resource
 def get_manager():
