@@ -9,7 +9,7 @@ from pyshimmer import ShimmerBluetooth, DEFAULT_BAUDRATE, DataPacket
 from pyshimmer.bluetooth.bt_api import BluetoothRequestHandler
 from pyshimmer.dev.channels import ESensorGroup
 from pyshimmer.util import fmt_hex
-
+from collections import deque
 
 # ============================================================
 # PATCH RUNTIME
@@ -61,6 +61,7 @@ def safe_print(messaggio):
 # WORKER IMU
 # ============================================================
 def imu_worker(port, manager):
+    finestra_imu = deque(maxlen=50) # Memoria per gli ultimi 50 campioni
     while manager.running:
         ser = None
         shim_dev = None
@@ -92,32 +93,33 @@ def imu_worker(port, manager):
                 for ch_key, val in pkt._values.items():
                     ch_str = str(ch_key).upper()
                     if "ACCEL" in ch_str:
-                        if "X" in ch_str:
-                            x = val
-                        elif "Y" in ch_str:
-                            y = val
-                        elif "Z" in ch_str:
-                            z = val
+                        if "X" in ch_str: x = val
+                        elif "Y" in ch_str: y = val
+                        elif "Z" in ch_str: z = val
                         found = True
 
                 if found:
                     mov = int((x**2 + y**2 + z**2) ** 0.5)
-                    if not manager._imu_initialized:
-                        manager.imu_offset = mov
-                        manager._imu_initialized = True
-                    else:
-                        manager.imu_offset = 0.99 * manager.imu_offset + 0.01 * mov
-
-                    diff = abs(mov - manager.imu_offset)
-                    activity = int(diff) if diff > 80 else 0
+                    
+                    # Aggiungiamo il valore alla nostra finestra mobile
+                    finestra_imu.append(mov)
+                    
+                    # Calcoliamo l'attività solo quando la finestra è piena
+                    activity = 0
+                    if len(finestra_imu) == 50:
+                        # Escursione = differenza tra picco massimo e minimo nella finestra
+                        escursione = max(finestra_imu) - min(finestra_imu)
+                        # Soglia tarata per camminata (puoi aggiustarla tra 100 e 200)
+                        activity = int(escursione) if escursione > 150 else 0
 
                     with manager.data_lock:
                         manager.activity_level = activity
                         manager.imu_history.append(activity)
                         
-                        # --- NUOVO: Salvataggio dati IMU ---
                         if getattr(manager, 'is_recording', False):
-                            manager.dati_da_salvare.append([time.time(), "IMU", activity, mov])
+                            manager.dati_da_salvare.append([
+                                time.time(), "IMU", activity, mov, manager.stato_fisiologico
+                            ])
 
             shim_dev.add_stream_callback(imu_handler)
             shim_dev.start_streaming()
@@ -225,6 +227,7 @@ def ecg_worker(port, manager):
                             delta = abs(val_f - val_prec)
 
                             if val_f > 8000 and val_prec <= val_f and (ora - ultimo_battito) > 0.5:
+                                intervallo_sec = ora - ultimo_battito
                                 bpm_instant = 60 / max(0.01, ora - ultimo_battito)
                                 bpm_constrained = max(40, min(200, int(bpm_instant)))
                                 with manager.data_lock:
@@ -232,6 +235,7 @@ def ecg_worker(port, manager):
                                     manager.bpm_display = int(
                                         sum(manager.bpm_buffer) / len(manager.bpm_buffer)
                                     )
+                                    manager.rr_intervals.append(intervallo_sec)
                                 ultimo_battito = ora
 
                             with manager.data_lock:
@@ -239,7 +243,7 @@ def ecg_worker(port, manager):
                                 
                                 # --- NUOVO: Salvataggio dati ECG ---
                                 if getattr(manager, 'is_recording', False):
-                                    manager.dati_da_salvare.append([ora, "ECG", val_f, manager.bpm_display])
+                                    manager.dati_da_salvare.append([ora, "ECG", val_f, manager.bpm_display, manager.stato_fisiologico])
 
                             val_prec = val_f
 
