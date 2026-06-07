@@ -2,29 +2,63 @@ import streamlit as st
 import time
 import csv
 import os
-import joblib 
+import joblib
 import pandas as pd
-import numpy as np # Necessario per i calcoli matematici dell'HRV
+import numpy as np
+from scipy.interpolate import interp1d
+from scipy.signal import welch
 
-# Importiamo dai nostri file separati
 from manager import get_manager
 from workers import start_threads_if_needed
 
-# --- CONFIGURAZIONE PORTE E MODELLO ---
-COM_IMU = "COM4"  
-COM_ECG = "COM5"  
+COM_IMU = "COM4"
+COM_ECG = "COM5"
 NOME_FILE_CSV = "dati_sessione.csv"
-NOME_MODELLO = "modello_wesad.pkl" 
+NOME_MODELLO = "modello_wesad.pkl"
+FEATURE_COLS = ['BPM', 'RMSSD', 'SDNN', 'MeanRR', 'LF_HF', 'Activity_Mean', 'Activity_Std']
 
-# --- CARICAMENTO MODELLO ML ---
+
 @st.cache_resource
 def carica_modello_ia():
     try:
-        modello = joblib.load(NOME_MODELLO)
-        return modello
+        return joblib.load(NOME_MODELLO)
     except Exception as e:
         st.error(f"Modello non trovato o errore di caricamento: {e}")
         return None
+
+
+def calcola_feature_live(rr_list, imu_data, bpm, fs_rr=4.0):
+    if len(rr_list) < 8:
+        return None
+
+    rr = np.array(rr_list)
+    rr_ms = rr * 1000
+
+    rmssd = np.sqrt(np.mean(np.diff(rr_ms) ** 2))
+    sdnn = np.std(rr_ms)
+    mean_rr = np.mean(rr_ms)
+
+    try:
+        t = np.cumsum(rr_ms) / 1000.0
+        t -= t[0]
+        f_interp = interp1d(t, rr_ms, kind='linear', fill_value='extrapolate')
+        t_uniform = np.arange(0, t[-1], 1.0 / fs_rr)
+        rr_uniform = f_interp(t_uniform)
+        freqs, psd = welch(rr_uniform, fs=fs_rr, nperseg=min(len(rr_uniform), 256))
+        lf = np.trapezoid(psd[(freqs >= 0.04) & (freqs < 0.15)],
+                          freqs[(freqs >= 0.04) & (freqs < 0.15)])
+        hf = np.trapezoid(psd[(freqs >= 0.15) & (freqs < 0.40)],
+                          freqs[(freqs >= 0.15) & (freqs < 0.40)])
+        lf_hf = lf / hf if hf > 0 else 0.0
+    except Exception:
+        lf_hf = 0.0
+
+    imu_arr = np.array(imu_data) if len(imu_data) > 0 else np.array([0])
+    activity_mean = np.mean(imu_arr)
+    activity_std = np.std(imu_arr)
+
+    return [bpm, rmssd, sdnn, mean_rr, lf_hf, activity_mean, activity_std]
+
 
 def main():
     st.set_page_config(page_title="Dashboard Shimmer Live", layout="wide")
@@ -32,7 +66,7 @@ def main():
 
     manager = get_manager()
     modello_ia = carica_modello_ia()
-    
+
     if "initialized" not in st.session_state:
         st.session_state.initialized = True
         start_threads_if_needed(manager, COM_IMU, COM_ECG)
@@ -42,18 +76,16 @@ def main():
     with c_header2:
         registra = st.toggle("🔴 Registra Dati CSV")
 
-    # --- GESTIONE SCRITTURA CSV ASINCRONA ---
+    # --- GESTIONE CSV ---
     if registra:
         manager.is_recording = True
         if not os.path.isfile(NOME_FILE_CSV):
             with open(NOME_FILE_CSV, "w", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
                 writer.writerow(["Timestamp", "Sensore", "Valore_Primario", "Valore_Secondario", "Stato_IA"])
-
         with manager.data_lock:
             dati_copia = list(manager.dati_da_salvare)
             manager.dati_da_salvare.clear()
-        
         if dati_copia:
             with open(NOME_FILE_CSV, "a", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
@@ -71,32 +103,20 @@ def main():
         activity_current = manager.activity_level
         ecg_status = manager.ecg_status
         imu_status = manager.imu_status
-        rr_list = list(manager.rr_intervals) # Estrazione tempi battiti
+        rr_list = list(manager.rr_intervals)
 
-    # --- CALCOLO HRV (RMSSD) IN TEMPO REALE ---
-    if len(rr_list) > 1:
-        diff_rr = np.diff(rr_list)
-        rmssd_current = int(np.sqrt(np.mean(diff_rr**2)) * 1000)
-    else:
-        rmssd_current = 0
+    # --- CALCOLO FEATURE E INFERENZA ---
+    feat = calcola_feature_live(rr_list, imu_data, bpm_current)
+    rmssd_display = int(feat[1]) if feat else 0
 
-    # --- INFERENZA MACHINE LEARNING EMOZIONALE E FISICA ---
-    if modello_ia is not None and manager.ecg_status == "✅ ECG Connesso" and manager.imu_status == "✅ IMU Connesso":
-        
-        # IL GATEKEEPER FISICO
-        # Se il movimento è molto alto, bypassiamo l'IA e dichiariamo lo sforzo fisico
-        if activity_current > 150: # Puoi regolare questa soglia (es. 100 o 200) in base ai tuoi dati
+    if modello_ia is not None and ecg_status == "✅ ECG Connesso" and imu_status == "✅ IMU Connesso":
+        if activity_current > 150:
             manager.stato_fisiologico = "🏃 IN MOVIMENTO (Analisi Emozioni Sospesa)"
-            
+        elif feat is None:
+            manager.stato_fisiologico = "⏳ Raccolta dati HRV in corso..."
         else:
-            # Se l'utente è fermo, lasciamo parlare l'Intelligenza Artificiale
-            feature_attuali = pd.DataFrame(
-                [[bpm_current, rmssd_current, activity_current]], 
-                columns=['BPM', 'RMSSD', 'Activity']
-            )
-            
+            feature_attuali = pd.DataFrame([feat], columns=FEATURE_COLS)
             predizione = modello_ia.predict(feature_attuali)[0]
-            
             if predizione == 0:
                 manager.stato_fisiologico = "🟢 RIPOSO (Baseline)"
             elif predizione == 1:
@@ -106,31 +126,27 @@ def main():
     else:
         manager.stato_fisiologico = "⏳ Attesa Dati..."
 
-    # --- RENDERIZZAZIONE GRAFICA ---
-    
+    # --- RENDERIZZAZIONE ---
     st.subheader(f"Stato Mentale/Fisico (AI): {manager.stato_fisiologico}")
     st.markdown("---")
 
-    # NUOVO LAYOUT A 3 COLONNE!
     c1, c2, c3 = st.columns(3)
     with c1:
         st.metric("Frequenza Cardiaca", f"{bpm_current} BPM", ecg_status)
     with c2:
-        # Mostriamo l'HRV. Più è alto, più si è rilassati.
-        st.metric("Variabilità Cardiaca (HRV)", f"{rmssd_current} ms", "RMSSD")
+        st.metric("Variabilità Cardiaca (HRV)", f"{rmssd_display} ms", "RMSSD")
     with c3:
         st.metric("Attività Motoria", activity_current, imu_status)
 
-    # Grafici sottostanti
     cg1, cg2 = st.columns(2)
     with cg1:
         st.line_chart(ecg_data, height=300)
     with cg2:
         st.area_chart(imu_data, height=300)
 
-    # Refresh
     time.sleep(0.5)
     st.rerun()
+
 
 if __name__ == "__main__":
     main()

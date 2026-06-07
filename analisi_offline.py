@@ -24,7 +24,7 @@ def main():
         print("⚠️ Il file CSV è vuoto. Registra qualche dato prima di analizzarlo.")
         return
 
-    print("✅ Dati caricati. Generazione del grafico intelligente in corso...")
+    print("✅ Dati caricati. Generazione del grafico emozionale in corso...")
 
     # Rimuoviamo eventuali righe corrotte
     df = df.dropna(subset=['Timestamp', 'Sensore'])
@@ -48,18 +48,26 @@ def main():
         # Disegniamo la linea rossa dei BPM
         ax1.plot(df_ecg['Tempo_Relativo'], df_ecg['Valore_Secondario'], color='red', linewidth=2, label='Frequenza Cardiaca (BPM)')
         ax1.set_ylabel('BPM', fontsize=12, fontweight='bold')
-        ax1.set_title('Risposta Cardiovascolare & Predizione IA', fontsize=14)
+        ax1.set_title('Risposta Cardiovascolare & Stati Emotivi', fontsize=14)
         ax1.grid(True, linestyle='--', alpha=0.7)
 
-        # --- LA MAGIA DELL'IA ---
-        # Se esiste la colonna Stato_IA, coloriamo lo sfondo dove c'è lo sforzo
+        # --- LA MAGIA DELL'IA (Gestione 3 Stati + Movimento) ---
         if 'Stato_IA' in df_ecg.columns:
-            # Creiamo una maschera booleana (Vero/Falso) se la stringa contiene "STRESS"
-            is_stress = df_ecg['Stato_IA'].astype(str).str.contains('STRESS', na=False)
-            # Riempiamo lo sfondo (0-1 sull'asse Y relativo) usando la maschera
+            # Creiamo le maschere booleane per i diversi stati
+            is_stress = df_ecg['Stato_IA'].astype(str).str.contains('STRESS', na=False, case=False)
+            is_amusement = df_ecg['Stato_IA'].astype(str).str.contains('DIVERTIMENTO', na=False, case=False)
+            is_movement = df_ecg['Stato_IA'].astype(str).str.contains('MOVIMENTO', na=False, case=False)
+
+            # Riempiamo gli sfondi con colori semantici
             ax1.fill_between(df_ecg['Tempo_Relativo'], 0, 1, where=is_stress, 
-                             color='orange', alpha=0.2, transform=ax1.get_xaxis_transform(),
-                             label='Fase Sforzo (Rilevata da IA)')
+                             color='orange', alpha=0.3, transform=ax1.get_xaxis_transform(),
+                             label='Stress Cognitivo')
+            ax1.fill_between(df_ecg['Tempo_Relativo'], 0, 1, where=is_amusement, 
+                             color='lightgreen', alpha=0.4, transform=ax1.get_xaxis_transform(),
+                             label='Divertimento / Relax')
+            ax1.fill_between(df_ecg['Tempo_Relativo'], 0, 1, where=is_movement, 
+                             color='lightgray', alpha=0.5, transform=ax1.get_xaxis_transform(),
+                             label='In Movimento (IA Sospesa)')
             
         ax1.legend(loc='upper right')
 
@@ -74,17 +82,21 @@ def main():
 
         # Coloriamo lo sfondo anche sotto per allineamento visivo
         if 'Stato_IA' in df_imu.columns:
-            is_stress_imu = df_imu['Stato_IA'].astype(str).str.contains('STRESS', na=False)
-            ax2.fill_between(df_imu['Tempo_Relativo'], 0, 1, where=is_stress_imu, 
-                             color='orange', alpha=0.2, transform=ax2.get_xaxis_transform())
+            is_stress_imu = df_imu['Stato_IA'].astype(str).str.contains('STRESS', na=False, case=False)
+            is_amusement_imu = df_imu['Stato_IA'].astype(str).str.contains('DIVERTIMENTO', na=False, case=False)
+            is_movement_imu = df_imu['Stato_IA'].astype(str).str.contains('MOVIMENTO', na=False, case=False)
+
+            ax2.fill_between(df_imu['Tempo_Relativo'], 0, 1, where=is_stress_imu, color='orange', alpha=0.3, transform=ax2.get_xaxis_transform())
+            ax2.fill_between(df_imu['Tempo_Relativo'], 0, 1, where=is_amusement_imu, color='lightgreen', alpha=0.4, transform=ax2.get_xaxis_transform())
+            ax2.fill_between(df_imu['Tempo_Relativo'], 0, 1, where=is_movement_imu, color='lightgray', alpha=0.5, transform=ax2.get_xaxis_transform())
 
         ax2.legend(loc='upper right')
 
     # 5. Ottimizzazione e Salvataggio
-    plt.suptitle('Validazione del Modello: Riconoscimento Automatico Sforzo Fisico', fontsize=16, fontweight='bold')
+    plt.suptitle('Analisi Emozionale WESAD: Stress Cognitivo vs Rilassamento', fontsize=16, fontweight='bold')
     plt.tight_layout()
     
-    nome_immagine = "risultato_ia_validazione.png"
+    nome_immagine = "risultato_emozioni_validazione.png"
     plt.savefig(nome_immagine, dpi=300)
     print(f"🎉 Grafico salvato con successo come '{nome_immagine}'!")
     
