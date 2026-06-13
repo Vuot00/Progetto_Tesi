@@ -4,7 +4,7 @@ import os
 import matplotlib.patches as mpatches
 
 # --- CONFIGURAZIONE ---
-NOME_FILE_CSV = "dati_sessione.csv"
+NOME_FILE_CSV = "dati_sessione_tesi.csv"
 
 def main():
     print(f"Ricerca del file {NOME_FILE_CSV} in corso...")
